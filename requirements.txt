@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+groq
+requests
+numpy
+hmmlearn
+playwright
+gTTS
