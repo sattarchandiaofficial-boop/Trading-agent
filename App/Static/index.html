@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Nexus</title>
+<style>
+  :root {
+    --bg: #0b0f14; --card: #131a22; --accent: #3ddc97; --accent-dim: #245c46;
+    --text: #e8edf2; --text-dim: #8a97a6;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  h1 { font-size: 1.1rem; color: var(--text-dim); font-weight: 500; margin-bottom: 40px; }
+  #mic-btn {
+    width: 140px; height: 140px; border-radius: 50%;
+    background: var(--accent-dim); border: 3px solid var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 2.5rem; user-select: none; touch-action: manipulation;
+    transition: transform 0.15s, background 0.15s;
+  }
+  #mic-btn.recording { background: var(--accent); transform: scale(1.08); }
+  #status { margin-top: 24px; color: var(--text-dim); min-height: 1.2em; text-align: center; }
+  #result {
+    margin-top: 32px; background: var(--card); border-radius: 16px; padding: 20px;
+    max-width: 480px; width: 100%; display: none;
+  }
+  #result.visible { display: block; }
+  .verdict { font-size: 1.4rem; font-weight: 700; }
+  .verdict.buy { color: var(--accent); }
+  .verdict.sell { color: #e05a5a; }
+  .verdict.sideways { color: #d9a94b; }
+  .reasoning { margin-top: 10px; color: var(--text-dim); line-height: 1.5; font-size: 0.95rem; }
+  .risk { margin-top: 12px; font-size: 0.85rem; color: #d9a94b; }
+  #agent-list { margin-top: 20px; border-top: 1px solid #223; padding-top: 14px; }
+  .agent-row { padding: 10px 0; border-bottom: 1px solid #1c2530; cursor: pointer; }
+  .agent-row:last-child { border-bottom: none; }
+  .agent-row-head { display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+  .agent-bias { font-size: 0.8rem; padding: 2px 8px; border-radius: 6px; }
+  .agent-bias.bullish { background: var(--accent-dim); color: var(--accent); }
+  .agent-bias.bearish { background: #4a1f1f; color: #e05a5a; }
+  .agent-bias.neutral { background: #3a3222; color: #d9a94b; }
+  .agent-detail { display: none; margin-top: 8px; font-size: 0.85rem; color: var(--text-dim); line-height: 1.5; }
+  .agent-row.open .agent-detail { display: block; }
+  .speak-btn { margin-top: 8px; color: var(--accent); font-size: 0.8rem; display: inline-block; }
+</style>
+</head>
+<body>
+  <h1>Press and hold, then speak</h1>
+  <div id="mic-btn">🎙️</div>
+  <div id="status">Tap and hold to ask Nexus</div>
+  <div id="result">
+    <div class="verdict" id="verdict-text"></div>
+    <div class="reasoning" id="reasoning-text"></div>
+    <div class="risk" id="risk-text"></div>
+    <div id="agent-list"></div>
+  </div>
+
+<script>
+// Nexus's backend runs locally in Termux, on the same phone as this page.
+const BACKEND_URL = "http://127.0.0.1:8765/analyze";
+
+const micBtn = document.getElementById("mic-btn");
+const statusEl = document.getElementById("status");
+const resultEl = document.getElementById("result");
+const verdictEl = document.getElementById("verdict-text");
+const reasoningEl = document.getElementById("reasoning-text");
+const riskEl = document.getElementById("risk-text");
+
+let mediaRecorder, chunks = [];
+
+function speakText(text) {
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+}
+
+async function startRecording() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mediaRecorder = new MediaRecorder(stream);
+  chunks = [];
+  mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+  mediaRecorder.onstop = sendRecording;
+  mediaRecorder.start();
+  micBtn.classList.add("recording");
+  statusEl.textContent = "Listening...";
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+    mediaRecorder.stream.getTracks().forEach((t) => t.stop());
+  }
+  micBtn.classList.remove("recording");
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function sendRecording() {
+  statusEl.textContent = "Analyzing...";
+  try {
+    const blob = new Blob(chunks, { type: "audio/webm" });
+    const audio_base64 = await blobToBase64(blob);
+
+    const res = await fetch(BACKEND_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audio_base64 }),
+    });
+    const data = await res.json();
+
+    speakText(data.spoken_summary || "No response.");
+    renderResult(data);
+    statusEl.textContent = "Tap and hold to ask again";
+  } catch (err) {
+    statusEl.textContent = "Error — is Nexus running in Termux?";
+    console.error(err);
+  }
+}
+
+function renderResult(data) {
+  const v = data.verdict;
+  if (v) {
+    verdictEl.textContent = (v.verdict || "").toUpperCase();
+    verdictEl.className = "verdict " + (v.verdict || "");
+    reasoningEl.textContent = v.reasoning || v.error || "";
+    riskEl.textContent = v.key_risk ? "Risk: " + v.key_risk : "";
+  } else if (data.mode === "single_agent") {
+    const only = (data.specialist_outputs || [])[0] || {};
+    verdictEl.textContent = (only.bias || "").toUpperCase();
+    verdictEl.className = "verdict " + (only.bias || "");
+    reasoningEl.textContent = only.summary || only.error || "";
+    riskEl.textContent = "";
+  } else {
+    verdictEl.textContent = "";
+    verdictEl.className = "verdict";
+    reasoningEl.textContent = data.answer || data.spoken || "";
+    riskEl.textContent = "";
+  }
+  renderAgentList(data.specialist_outputs || []);
+  resultEl.classList.add("visible");
+}
+
+function renderAgentList(outputs) {
+  const listEl = document.getElementById("agent-list");
+  listEl.innerHTML = "";
+  if (outputs.length <= 1) return;
+  outputs.forEach((out) => {
+    const row = document.createElement("div");
+    row.className = "agent-row";
+    row.innerHTML = `
+      <div class="agent-row-head">
+        <span>${out.label || out.agent || "agent"}</span>
+        <span class="agent-bias ${out.bias || ""}">${(out.bias || "?").toUpperCase()}</span>
+      </div>
+      <div class="agent-detail">
+        ${out.summary || out.error || ""}
+        <div class="speak-btn">🔊 Sunein</div>
+      </div>
+    `;
+    row.addEventListener("click", (e) => {
+      if (e.target.classList.contains("speak-btn")) {
+        speakText(`${out.label}: ${out.summary || out.error || ""}`);
+        e.stopPropagation();
+        return;
+      }
+      row.classList.toggle("open");
+    });
+    listEl.appendChild(row);
+  });
+}
+
+micBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startRecording(); });
+micBtn.addEventListener("touchend", (e) => { e.preventDefault(); stopRecording(); });
+micBtn.addEventListener("mousedown", startRecording);
+micBtn.addEventListener("mouseup", stopRecording);
+</script>
+</body>
+</html>
